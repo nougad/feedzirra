@@ -131,7 +131,7 @@ module Feedzirra
       url_queue.slice!(0, 30).each do |url|
         add_url_to_multi(multi, url, url_queue, responses, options)
       end
- 
+
       multi.perform
       return urls.is_a?(String) ? responses.values.first : responses
     end
@@ -193,7 +193,6 @@ module Feedzirra
     # [url<String>] The URL of the feed that you would like to be fetched.
     # [url_queue<Array>] An array of URLs that are queued for request.
     # [responses<Hash>] Existing responses that you want the response from the request added to.
-    # [feeds<String> or <Array>] A single feed object, or an array of feed objects.
     # [options<Hash>] Valid keys for this argument as as followed:
     #                 * :user_agent - String that overrides the default user agent.
     #                 * :on_success - Block that gets executed after a successful request.
@@ -213,24 +212,16 @@ module Feedzirra
         curl.timeout = options[:timeout] if options[:timeout]
         
         curl.on_success do |c|
-          add_url_to_multi(multi, url_queue.shift, url_queue, responses, options) unless url_queue.empty?
-          xml = decode_content(c)
-          klass = determine_feed_parser_for_xml(xml)
-          
-          if klass
-            begin
-              feed = klass.parse(xml)
-              feed.feed_url = c.last_effective_url
-              feed.etag = etag_from_header(c.header_str)
-              feed.last_modified = last_modified_from_header(c.header_str)
-              responses[url] = feed
-              options[:on_success].call(url, feed) if options.has_key?(:on_success)
-            rescue Exception => e
-              options[:on_failure].call(url, c.response_code, c.header_str, c.body_str) if options.has_key?(:on_failure)
-            end
-          else
-            # puts "Error determining parser for #{url} - #{c.last_effective_url}"
-            # raise NoParserAvailable.new("no valid parser for content.") (this would unfirtunately fail the whole 'multi', so it's not really useable)
+          begin
+            add_url_to_multi(multi, url_queue.shift, url_queue, responses, options) unless url_queue.empty?
+            xml = decode_content(c)
+            feed = Feed.parse(xml)
+            feed.feed_url = c.last_effective_url
+            feed.etag = etag_from_header(c.header_str)
+            feed.last_modified = last_modified_from_header(c.header_str)
+            responses[url] = feed
+            options[:on_success].call(url, feed) if options.has_key?(:on_success)
+          rescue
             options[:on_failure].call(url, c.response_code, c.header_str, c.body_str) if options.has_key?(:on_failure)
           end
         end
@@ -238,7 +229,11 @@ module Feedzirra
         curl.on_failure do |c, err|
           add_url_to_multi(multi, url_queue.shift, url_queue, responses, options) unless url_queue.empty?
           responses[url] = c.response_code
-          options[:on_failure].call(url, c.response_code, c.header_str, c.body_str) if options.has_key?(:on_failure)
+          if c.response_code == 304 # it's not modified. this isn't an error condition
+            options[:on_success].call(url, feed) if options.has_key?(:on_success)
+          else
+            options[:on_failure].call(url, c.response_code, c.header_str, c.body_str) if options.has_key?(:on_failure)
+          end
         end
       end
       multi.add(easy)
@@ -249,9 +244,8 @@ module Feedzirra
     # === Parameters
     # [multi<Curl::Multi>] The Curl::Multi object that the request should be added too.
     # [feed<Feed>] A feed object that you would like to be fetched.
-    # [url_queue<Array>] An array of feed objects that are queued for request.
+    # [feed_queue<Array>] An array of feed objects that are queued for request.
     # [responses<Hash>] Existing responses that you want the response from the request added to.
-    # [feeds<String>] or <Array> A single feed object, or an array of feed objects.
     # [options<Hash>] Valid keys for this argument as as followed:
     #                 * :user_agent - String that overrides the default user agent.
     #                 * :on_success - Block that gets executed after a successful request.
@@ -259,44 +253,10 @@ module Feedzirra
     # === Returns
     # The updated Curl::Multi object with the request details added to it's stack.
     def self.add_feed_to_multi(multi, feed, feed_queue, responses, options) 
-      easy = Curl::Easy.new(feed.feed_url) do |curl|
-        curl.headers["User-Agent"]        = (options[:user_agent] || USER_AGENT)
-        curl.headers["If-Modified-Since"] = feed.last_modified.httpdate if feed.last_modified
-        curl.headers["If-None-Match"]     = feed.etag if feed.etag
-        curl.userpwd = options[:http_authentication].join(':') if options.has_key?(:http_authentication)
-        curl.follow_location = true
+      options[:if_modified_since] ||= feed.last_modified.httpdate if feed.last_modified
+      options[:if_none_match]     ||= feed.etag if feed.etag
 
-        curl.max_redirects = options[:max_redirects] if options[:max_redirects]
-        curl.timeout = options[:timeout] if options[:timeout]
-
-        curl.on_success do |c|
-          begin
-            add_feed_to_multi(multi, feed_queue.shift, feed_queue, responses, options) unless feed_queue.empty?
-            updated_feed = Feed.parse(c.body_str)
-            updated_feed.feed_url = c.last_effective_url
-            updated_feed.etag = etag_from_header(c.header_str)
-            updated_feed.last_modified = last_modified_from_header(c.header_str)
-            feed.update_from_feed(updated_feed)
-            responses[feed.feed_url] = feed
-            options[:on_success].call(feed) if options.has_key?(:on_success)
-          rescue Exception => e
-            options[:on_failure].call(feed, c.response_code, c.header_str, c.body_str) if options.has_key?(:on_failure)
-          end
-        end
-
-        curl.on_failure do |c, err|
-          add_feed_to_multi(multi, feed_queue.shift, feed_queue, responses, options) unless feed_queue.empty?
-          response_code = c.response_code
-          if response_code == 304 # it's not modified. this isn't an error condition
-            responses[feed.feed_url] = feed
-            options[:on_success].call(feed) if options.has_key?(:on_success)
-          else
-            responses[feed.url] = c.response_code
-            options[:on_failure].call(feed, c.response_code, c.header_str, c.body_str) if options.has_key?(:on_failure)
-          end
-        end
-      end
-      multi.add(easy)
+      add_url_to_multi(multi, feed.url, feed_queue.map {|f| f.url}, responses, options)
     end
 
     # Determines the etag from the request headers.
