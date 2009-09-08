@@ -235,7 +235,7 @@ describe Feedzirra::Feed do
 
     describe "#add_url_to_multi" do
       before(:each) do
-        @multi = Curl::Multi.new(@paul_feed[:url])
+        @multi = Curl::Multi.new
         @multi.stub!(:add)
         @easy_curl = Curl::Easy.new(@paul_feed[:url])
         
@@ -377,7 +377,7 @@ describe Feedzirra::Feed do
 
     describe "#add_feed_to_multi" do
       before(:each) do
-        @multi = Curl::Multi.new(@paul_feed[:url])
+        @multi = Curl::Multi.new
         @multi.stub!(:add)
         @easy_curl = Curl::Easy.new(@paul_feed[:url])
         @feed = Feedzirra::Feed.parse(sample_feedburner_atom_feed)
@@ -457,7 +457,7 @@ describe Feedzirra::Feed do
           @easy_curl.on_success.call(@easy_curl)
 
           responses.length.should == 1
-          responses['http://feeds.feedburner.com/PaulDixExplainsNothing'].should == @feed
+          responses[@feed.url].should == @feed
         end
 
         it 'should call proc if :on_success option is passed' do
@@ -485,6 +485,7 @@ describe Feedzirra::Feed do
         end
 
         it 'should call on success callback if the response code is 304' do
+          @easy_curl.stub!(:response_code).and_return(304)
           success = lambda { |feed| }
           success.should_receive(:call).with(@feed)
           @easy_curl.should_receive(:response_code).and_return(304)
