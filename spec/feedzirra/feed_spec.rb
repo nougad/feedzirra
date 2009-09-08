@@ -461,8 +461,8 @@ describe Feedzirra::Feed do
         end
 
         it 'should call proc if :on_success option is passed' do
-          success = lambda { |feed| }
-          success.should_receive(:call).with(@feed)
+          success = lambda { |url, feed| }
+          success.should_receive(:call).with(@feed.url, @feed)
           Feedzirra::Feed.add_feed_to_multi(@multi, @feed, [], {}, { :on_success => success })
           @easy_curl.on_success.call(@easy_curl)
         end
@@ -487,7 +487,7 @@ describe Feedzirra::Feed do
         it 'should call on success callback if the response code is 304' do
           @easy_curl.stub!(:response_code).and_return(304)
           success = lambda { |feed| }
-          success.should_receive(:call).with(@feed)
+          success.should_receive(:call).with(@feed.url, @feed)
           @easy_curl.should_receive(:response_code).and_return(304)
           Feedzirra::Feed.add_feed_to_multi(@multi, @feed, [], {}, { :on_success => success })
           @easy_curl.on_failure.call(@easy_curl)

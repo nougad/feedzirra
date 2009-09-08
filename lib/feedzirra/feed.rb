@@ -81,26 +81,9 @@ module Feedzirra
       url_queue = [*urls]
       multi = Curl::Multi.new
       responses = {}
-      url_queue.each do |url|
-        easy = Curl::Easy.new(url) do |curl|
-          curl.headers["User-Agent"]        = (options[:user_agent] || USER_AGENT)
-          curl.headers["If-Modified-Since"] = options[:if_modified_since].httpdate if options.has_key?(:if_modified_since)
-          curl.headers["If-None-Match"]     = options[:if_none_match] if options.has_key?(:if_none_match)
-          curl.headers["Accept-encoding"]   = 'gzip, deflate' if options.has_key?(:compress)
-          curl.follow_location = true
-          curl.userpwd = options[:http_authentication].join(':') if options.has_key?(:http_authentication)
-          
-          curl.max_redirects = options[:max_redirects] if options[:max_redirects]
-          curl.timeout = options[:timeout] if options[:timeout]
-
-          curl.on_success do |c|
-            responses[url] = decode_content(c)
-          end
-          curl.on_failure do |c, err|
-            responses[url] = c.response_code
-          end
-        end
-        multi.add(easy)
+      options[:raw] = true
+      url_queue.slice!(0, 30).each do |url|
+        add_to_curl(multi, url, url_queue, responses, options)
       end
 
       multi.perform
@@ -200,6 +183,10 @@ module Feedzirra
     # === Returns
     # The updated Curl::Multi object with the request details added to it's stack.
     def self.add_url_to_multi(multi, url, url_queue, responses, options)
+      add_to_curl(multi, url, url_queue, responses, options)
+    end
+
+    def self.add_to_curl(multi, url, url_queue, responses, options)
       easy = Curl::Easy.new(url) do |curl|
         curl.headers["User-Agent"]        = (options[:user_agent] || USER_AGENT)
         curl.headers["If-Modified-Since"] = options[:if_modified_since].httpdate if options.has_key?(:if_modified_since)
@@ -213,24 +200,33 @@ module Feedzirra
 
         curl.on_success do |c|
           begin
-            add_url_to_multi(multi, url_queue.shift, url_queue, responses, options) unless url_queue.empty?
+            add_to_curl(multi, url_queue.shift, url_queue, responses, options) unless url_queue.empty?
             xml = decode_content(c)
-            feed = Feed.parse(xml)
-            feed.feed_url = c.last_effective_url
-            feed.etag = etag_from_header(c.header_str)
-            feed.last_modified = last_modified_from_header(c.header_str)
-            responses[url] = feed
-            options[:on_success].call(url, feed) if options.has_key?(:on_success)
+            unless options[:raw]
+              feed = Feed.parse(xml)
+              feed.feed_url = c.last_effective_url
+              feed.etag = etag_from_header(c.header_str)
+              feed.last_modified = last_modified_from_header(c.header_str)
+              if options.has_key? :feed
+                options[:feed].update_from_feed(feed)
+                feed = options[:feed]
+              end
+              responses[url] = feed
+            else
+              responses[url] = xml
+            end
+            options[:on_success].call(url, responses[url]) if options.has_key?(:on_success)
           rescue
             options[:on_failure].call(url, c.response_code, c.header_str, c.body_str) if options.has_key?(:on_failure)
           end
         end
 
         curl.on_failure do |c, err|
-          add_url_to_multi(multi, url_queue.shift, url_queue, responses, options) unless url_queue.empty?
+          add_to_curl(multi, url_queue.shift, url_queue, responses, options) unless url_queue.empty?
           responses[url] = c.response_code
           if c.response_code == 304 # it's not modified. this isn't an error condition
-            options[:on_success].call(url, feed) if options.has_key?(:on_success)
+            responses[url] = options[:feed] if options.has_key? :feed
+            options[:on_success].call(url, responses[url]) if options.has_key?(:on_success)
           else
             options[:on_failure].call(url, c.response_code, c.header_str, c.body_str) if options.has_key?(:on_failure)
           end
@@ -252,11 +248,12 @@ module Feedzirra
     #                 * :on_failure - Block that gets executed after a failed request.
     # === Returns
     # The updated Curl::Multi object with the request details added to it's stack.
-    def self.add_feed_to_multi(multi, feed, feed_queue, responses, options) 
-      options[:if_modified_since] ||= feed.last_modified.httpdate if feed.last_modified
+    def self.add_feed_to_multi(multi, feed, feed_queue, responses, options)
+      options[:if_modified_since] ||= feed.last_modified if feed.last_modified
       options[:if_none_match]     ||= feed.etag if feed.etag
+      options[:feed]                = feed
 
-      add_url_to_multi(multi, feed.url, feed_queue.map {|f| f.url}, responses, options)
+      add_to_curl(multi, feed.url, feed_queue.map {|f| f.url}, responses, options)
     end
 
     # Determines the etag from the request headers.
