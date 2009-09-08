@@ -109,6 +109,7 @@ module Feedzirra
       multi = Curl::Multi.new
       responses = {}
 
+      options[:feed] = :new
       # I broke these down so I would only try to do 30 simultaneously because
       # I was getting weird errors when doing a lot. As one finishes it pops another off the queue.
       url_queue.slice!(0, 30).each do |url|
@@ -207,7 +208,9 @@ module Feedzirra
               feed.feed_url = c.last_effective_url
               feed.etag = etag_from_header(c.header_str)
               feed.last_modified = last_modified_from_header(c.header_str)
-              if options.has_key? :feed
+              if options.has_key? :feed and options[:feed] == :new
+                feed.new_entries = feed.entries
+              elsif options.has_key? :feed
                 options[:feed].update_from_feed(feed)
                 feed = options[:feed]
               end
